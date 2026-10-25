@@ -15,4 +15,5 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {'Content-Type':mime[path.extname(file)] || 'text/plain','Cache-Control':'no-store'}); res.end(data);
   } catch { res.writeHead(404); res.end('Not found'); }
 });
-server.listen(Number(process.env.PORT) || 4173, '127.0.0.1', () => console.log('Crate Swipe → http://127.0.0.1:' + server.address().port));
+const host = process.env.HOST || '127.0.0.1';
+server.listen(Number(process.env.PORT) || 4173, host, () => console.log('Crate Swipe → http://' + host + ':' + server.address().port));
