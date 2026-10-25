@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="app-version" content="crate-swipe 3.1.6-dev">
+<meta name="app-version" content="crate-swipe 3.1.7-dev">
 <meta name="description" content="Dig through vinyl. Discover a track, save a record, find your next favourite.">
 <title>Crate Swipe</title>
 <link rel="icon" href="assets/icons/session.svg" type="image/svg+xml">
@@ -23,7 +23,7 @@
 <div id="paused" aria-hidden="true">Ⅱ</div>
 <button id="sound" hidden>Tap to turn sound on</button><div id="hint" hidden>Tap the cover once to allow sound on this device</div>
 <footer id="dock" hidden aria-label="Now playing">
-  <div class="identity"><div class="titles"><div class="artist" id="artist"></div><div class="track" id="track"></div></div><button class="like" id="heart" aria-label="Add record to wantlist" aria-pressed="false"><img src="assets/icons/heart-outline.svg" width="24" height="24" alt=""></button></div>
+  <div class="identity"><div class="titles"><div class="artist" id="artist"></div><div class="track" id="track"></div></div><div class="actions"><button class="like" id="share" aria-label="Share this track"><img src="assets/icons/share.svg" width="24" height="24" alt=""></button><button class="like" id="heart" aria-label="Add record to wantlist" aria-pressed="false"><img src="assets/icons/heart-outline.svg" width="24" height="24" alt=""></button></div></div>
   <div class="progress"><div class="seek-track"><div id="seekFill"></div><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek in track"></div><div class="times"><span id="elapsed">0:00</span><span id="duration">0:00</span></div></div>
   <a class="youtube" id="youtube" target="_blank" rel="noopener noreferrer"><img src="assets/icons/play.svg" width="14" height="14" alt=""><span id="videoTitle"></span></a>
   <p id="matchWarning" class="small" hidden></p>
@@ -55,9 +55,9 @@
   <select id="playMode"><option value="explore">Explore · instant swipes (auto-next while the screen is on)</option><option value="run">Run · keeps playing the next songs with the phone locked</option></select>
   <button class="go" id="goBtn">Dig</button>
   <div class="row" style="margin-top:14px"><button class="pill" id="resetSeen">Reset seen songs</button><button class="pill" id="changeTok">Change token</button></div>
-  <p class="small">Only YouTube videos linked on Discogs releases are used. Vinyl only. Swipe up/down to listen. Tap the heart to save a find to your guest session, or directly to your wantlist when connected. Keys: Space pause · L like · E explore · M mute.</p>
+  <p class="small">Only YouTube videos linked on Discogs releases are used. Vinyl only. Swipe up/down to listen. Tap the heart to save a find to your guest session, or directly to your wantlist when connected. Tap share to send someone the song you're hearing. Keys: Space pause · L like · E explore · M mute.</p>
   <p class="small" id="seenCount"></p>
-  <p class="small">Version 3.1.6-dev</p>
+  <p class="small">Version 3.1.7-dev</p>
   <details><summary>Listening stats</summary><div class="stats" id="stats"></div><button class="pill" id="resetStats">Reset stats</button></details>
 
 </dialog>

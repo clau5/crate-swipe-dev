@@ -1,9 +1,10 @@
-import {GENRES, STYLES, Explorer, Discogs, primaryPick, chooseNext, adaptiveGap, poolVariety, flattenTracks, matchTrack, ytId, artistString, releaseToSongs} from './core.js';
+import {GENRES, STYLES, Explorer, Discogs, primaryPick, chooseNext, adaptiveGap, poolVariety, flattenTracks, matchTrack, ytId, artistString, releaseToSongs, slimRelease} from './core.js';
 import {SessionDiscoveries, GuestDiscoveries, guestStatus, trackKey} from './session.js';
 import {VideoAvailability} from './video-availability.js';
 import {CatalogueClient} from './catalogue-client.js';
 import {sharedCatalogueToken} from './config.js';
 import {PLAYLIST_MAX, playlistWindow, playlistMove, shouldRefresh, playlistJump} from './playlist.js';
+import {shareURL, parseShare, sharedSong, sharePrefill, shareFilters} from './share.js';
 
 const $ = selector => document.querySelector(selector);
 const storage = {
@@ -28,6 +29,11 @@ let pool = [], reserve = [], cards = [], active = -1, gap = 15, buffer = 30;
 let currentModal = null, returnPlayback = null, setupReturn = null, noticeTimer, opener;
 let releaseSong = null;
 let playing = {source:'feed', song:null, list:[], index:-1};
+// Share links (?share=<release>&yt=<video>): the shared track is pinned as card 0 for the whole visit.
+// shareGate stays true until the recipient applies their own filters; until then the card after
+// card 0 is a "start your own dig" gate that opens Filters, and Filters start from sharePrefill only.
+const share = parseShare(params);
+let sharedCard = null, gate = null, shareGate = false, digLoading = false, sharePrefillOpts = {};
 // One YouTube player for the whole session. iOS grants sound to the iframe that received the
 // first tap; reusing that iframe (loadVideoById) keeps the permission for every later swipe.
 const players = [null], ready = [false], loaded = [null];
@@ -102,6 +108,8 @@ function hide(options) {
   }
   const old = currentModal; if (!old) return;
   currentModal = null; old.close();
+  // Closing Filters without a dig: back to the shared track instead of sitting on the gate.
+  if (old === $('#pick') && shareGate && sharedCard && cards[active] === sharedCard) $('#feed').scrollTop = sharedCard.el.offsetTop;
   $('#dockHome').after($('#dock')); document.body.classList.remove('overlay');
   $('#veil').hidden = true;
   for (const el of [$('#feed'),$('#bar'),$('#empty')]) el.inert = false;
@@ -127,7 +135,8 @@ for (const [id, fn] of [['closeSetup',hide],['closePick',hide],['closeSession',h
 GENRES.forEach(value => $('#genre').add(new Option(value, value)));
 STYLES.forEach(value => { const o = document.createElement('option'); o.value = value; $('#styles').append(o); });
 async function openPick() {
-  for (const k of ['genre','style','label','country','y1','y2','startAt']) $('#' + k).value = opts[k] ?? '';
+  const values = shareGate ? shareFilters(opts,sharePrefillOpts) : opts;
+  for (const k of ['genre','style','label','country','y1','y2','startAt']) $('#' + k).value = values[k] ?? '';
   $('#hideSeen').checked = opts.hideSeen !== false; $('#autoNext').checked = opts.autoNext !== false; $('#playMode').value = opts.playMode === 'run' ? 'run' : 'explore';
   $('#seenCount').textContent = `${seen.size.toLocaleString()} songs seen on this device.`;
   const s = explorer?.state.stats || {};
@@ -154,7 +163,14 @@ $('#goBtn').onclick = () => {
   const values = Object.fromEntries(['genre','style','label','country','y1','y2','startAt'].map(k => [k, $('#' + k).value.trim()]));
   for (const k of ['y1','y2']) if (values[k] && (!/^\d{4}$/.test(values[k]) || +values[k] < 1900 || +values[k] > new Date().getFullYear() + 1)) return notify('Enter a valid four-digit year.');
   if (values.y1 && values.y2 && Math.abs(+values.y2 - +values.y1) > 60) return notify('Choose a year range of 60 years or less.');
-  opts = {...values,hideSeen:$('#hideSeen').checked,autoNext:$('#autoNext').checked,playMode:$('#playMode').value === 'run' ? 'run' : 'explore'}; storage.set('dx_opts', opts); hide(); start();
+  opts = {...values,hideSeen:$('#hideSeen').checked,autoNext:$('#autoNext').checked,playMode:$('#playMode').value === 'run' ? 'run' : 'explore'}; storage.set('dx_opts', opts);
+  if (shareGate) {
+    shareGate = false;
+    // The link did its job: a reload now resumes this dig (card 0 stays pinned until then).
+    const clean = new URLSearchParams(location.search); clean.delete('share'); clean.delete('yt');
+    try { history.replaceState(null,'',location.pathname + (clean.size ? '?' + clean : '') + location.hash); } catch {}
+  }
+  hide(); start();
 };
 // Switching Explore/Run applies right away and keeps the dig and the current song where they are.
 $('#playMode').onchange = () => {
@@ -230,20 +246,29 @@ async function start() {
   if (explorer) explorer.stopped = true;
   const generation = ++feedGeneration; recoveringAt = null; discoveryError = false; guestServiceUnavailable = false;
   observer.disconnect();
-  stopPlayers(); pool = []; reserve = []; cards = []; active = -1; gap = 15; buffer = model.isGuest ? 5 : 30;
-  playing = {source:'feed',song:null,list:[],index:-1}; $('#feed').replaceChildren(); renderDock();
+  const keep = sharedCard, keepPlaying = !!keep && playing.source === 'feed' && playing.song?.vid === keep.song.vid;
+  if (!keepPlaying) { stopPlayers(); playing = {source:'feed',song:null,list:[],index:-1}; }
+  pool = []; reserve = []; cards = keep ? [keep] : []; active = keep ? 0 : -1; gap = 15; buffer = model.isGuest ? 5 : 30;
+  $('#feed').replaceChildren(); gate = null; digLoading = !!keep; renderDock();
   const from = Number(opts.y1), to = Number(opts.y2); let years = [null];
   if (from && to) { const lo = Math.min(from,to), hi = Math.max(from,to); years = Array.from({length:hi-lo+1}, (_,i) => lo+i); } else if (from || to) years = [from || to];
   const yearLabel = years[0] === null ? 'Any year' : years.length > 1 ? `${years[0]}–${years.at(-1)}` : years[0];
   $('#chip').textContent = [opts.style || opts.genre || 'All vinyl',yearLabel,opts.label,opts.country].filter(Boolean).join(' · ');
   $('#empty').hidden = false; $('#spin').hidden = false; $('#emptyAction').hidden = true; $('#emptyAction').dataset.connect = ''; $('#emptyAction').textContent = 'Choose genre & year'; $('#emptyMsg').textContent = 'Digging through Discogs…';
+  if (keep) {
+    // Card 0 stays; the dig loads behind a gate card that shows progress, then card 1 takes over.
+    $('#feed').append(keep.el); observer.observe(keep.el); addGate(); setGate('Digging through Discogs…',true);
+    $('#empty').hidden = true; $('#feed').scrollTop = gate.offsetTop;
+  }
   if (fixture) {
     const checks = await Promise.all(fixtureData.songs.map(s => videoAvailability.check(s.vid)));
     if (generation !== feedGeneration) return;
-    fixtureData.songs.forEach((s,i) => { if (checks[i] !== false && !deadIds.has(s.vid)) addCard({...s}); });
-    fill(); $('#spin').hidden = true; return;
+    fixtureData.songs.forEach((s,i) => { if (checks[i] !== false && !deadIds.has(s.vid) && s.vid !== sharedCard?.song.vid) addCard({...s}); });
+    fill(); $('#spin').hidden = true;
+    if (digLoading && cards.length < 2) setGate('No playable tracks for this dig. Try another filter or reset seen songs.');
+    return;
   }
-  const next = new Explorer(discoveryClient, {...opts, years, cache,hitTarget:model.isGuest?30:300, skipVid:{has:id => deadIds.has(id) || (opts.hideSeen !== false && seen.has(id))},
+  const next = new Explorer(discoveryClient, {...opts, years, cache,hitTarget:model.isGuest?30:300, skipVid:{has:id => deadIds.has(id) || id === sharedCard?.song.vid || (opts.hideSeen !== false && seen.has(id))},
     checkVideo:id => videoAvailability.check(id),
     shouldPause:() => Math.max(0,cards.length-active-1) + poolVariety(pool,cards.slice(-gap).map(c=>c.song),gap) >= buffer,
     onSongs:(songs, x) => { if (explorer !== x) return; guestServiceUnavailable = false; const choice = primaryPick(songs); pool.push(choice.pick); reserve.push(...choice.rest); fill(); },
@@ -254,17 +279,19 @@ async function start() {
       if (x.done) fill();
       if (error) {
         discoveryError = true;
-        if (model.isGuest && !cards.length) {
+        if (model.isGuest && !digCount()) {
           guestServiceUnavailable = true;
+          if (digLoading) setGate('Guest discovery is unavailable right now. Swipe up to keep listening, or try again shortly.');
           $('#emptyMsg').textContent = 'Guest discovery is unavailable right now. Connect your Discogs account to keep digging.';
           $('#emptyAction').hidden = false; $('#emptyAction').textContent = 'Connect Discogs'; $('#emptyAction').dataset.connect = '1';
         }
         // Background retries stay quiet while there are tracks to browse.
-        if ((!cards.length || recoveringAt !== null) && Date.now()-lastDiscoveryNotice > 60000) {
+        if ((!digCount() || recoveringAt !== null) && Date.now()-lastDiscoveryNotice > 60000) {
           lastDiscoveryNotice = Date.now(); notify('Can’t load tracks right now. Retrying…',10000);
         }
       } else discoveryError = false;
       if (params.has('debug')) $('#stats').textContent = JSON.stringify({fetched:x.fetched,stats:x.state.stats,gap,buffer,pool:pool.length},null,2);
+      if (x.done && digLoading && !digCount() && !guestServiceUnavailable) setGate(x.total ? 'No playable tracks for this dig. Try another filter or reset seen songs.' : 'No vinyl records found. Try another style or year.');
       if (x.done && !cards.length && !guestServiceUnavailable) { $('#spin').hidden = true; $('#emptyAction').hidden = false; $('#emptyMsg').textContent = x.total ? 'No playable tracks for this dig. Try another filter or reset seen songs.' : 'No vinyl records found. Try another style or year.'; }
     }});
   explorer = next; next.run().catch(() => notify('Discovery stopped. Change your filters to try again.'));
@@ -281,7 +308,51 @@ function fill() {
     $('#feed').scrollTop = cards[index].el.offsetTop; activate(index);
   }
   if (cards.length && recoveringAt === null) { $('#empty').hidden = true; if (active < 0) activate(0); }
+  // First dig card after Apply: drop the gate and land on card 1. Card 0 stays one swipe up.
+  if (digLoading && cards.length > 1 && recoveringAt === null && cards[0] === sharedCard) {
+    digLoading = false; observer.unobserve(gate); gate.remove(); gate = null;
+    $('#feed').scrollTop = cards[1].el.offsetTop; activate(1); return;
+  }
   preload();
+}
+const digCount = () => cards.length - (sharedCard && cards[0] === sharedCard ? 1 : 0);
+function addGate() {
+  gate = document.createElement('section'); gate.className = 'card gate'; gate.setAttribute('aria-label','Start your own dig');
+  gate.innerHTML = `<div class="gate-copy"><div class="spin" hidden></div><p class="eyebrow">YOUR TURN</p><h2>Start your own dig</h2><p class="small gate-msg">Pick a genre or a year. Swipe up any time to hear the shared track again.</p><button class="pill">Choose your dig</button></div>`;
+  gate.querySelector('button').onclick = openPick;
+  $('#feed').append(gate); observer.observe(gate);
+}
+function setGate(message, loading = false) {
+  if (!gate) return;
+  gate.querySelector('.spin').hidden = !loading; gate.querySelector('.gate-msg').textContent = message;
+  gate.querySelector('h2').textContent = loading ? 'Digging…' : 'Start your own dig';
+  gate.querySelector('button').hidden = loading;
+}
+async function loadRelease(id) {
+  if (fixture) return fixtureData.releases.get(id) || null;
+  const hit = await cache.get('r:'+id); if (hit?.v) return hit.v;
+  const raw = await Promise.race([api.get('/releases/'+id,3),new Promise((_,reject)=>setTimeout(()=>reject(Error('timeout')),20000))]);
+  const rel = slimRelease(raw); cache.put('r:'+id,rel); return rel;
+}
+// Open a share link: that exact track as card 0, no filters applied; the recipient picks their own dig.
+async function startShared() {
+  shareGate = true; ++feedGeneration;
+  $('#chip').textContent = 'Pick your dig…';
+  $('#empty').hidden = false; $('#spin').hidden = false; $('#emptyAction').hidden = true; $('#emptyMsg').textContent = 'Loading the shared track…';
+  let rel = null, song = null;
+  if (!share.invalid) {
+    try { rel = await loadRelease(share.releaseId); } catch {}
+    song = sharedSong(rel,share.vid);
+    if (song && (deadIds.has(song.vid) || await videoAvailability.check(song.vid) === false)) song = null;
+  }
+  sharePrefillOpts = sharePrefill(rel); $('#spin').hidden = true;
+  if (!song) return shareMissing();
+  addCard(song); sharedCard = cards[0]; addGate(); fill();
+}
+function shareMissing() {
+  $('#empty').hidden = false; $('#spin').hidden = true;
+  $('#emptyMsg').textContent = 'Couldn’t find that track.'; $('#emptyAction').hidden = false; $('#emptyAction').dataset.connect = ''; $('#emptyAction').textContent = 'Start your own dig';
+  notify('Couldn’t find that track. Pick a genre or year to start digging.',10000); openPick();
 }
 function addCard(song) {
   const el = document.createElement('section'); el.className = 'card'; el.setAttribute('aria-label',song.trackTitle || song.videoTitle);
@@ -299,11 +370,16 @@ function addCard(song) {
     if (!soundOn || !ready[current] || players[current].getPlayerState() !== 1) togglePlay();
     else tapTimer = setTimeout(() => { if (cards[active]?.el === el) pausePlayback(); },300);
   });
-  $('#feed').append(el); cards.push({el,song}); observer.observe(el);
+  if (gate?.isConnected) gate.before(el); else $('#feed').append(el);
+  cards.push({el,song}); observer.observe(el);
 }
 const observer = new IntersectionObserver(entries => {
   if (currentModal) return;
-  for (const e of entries) if (e.intersectionRatio > .7) { const i = cards.findIndex(c=>c.el===e.target); if (i >= 0 && i !== active) activate(i); }
+  for (const e of entries) if (e.intersectionRatio > .7) {
+    // First swipe down from the shared track opens Filters; card 0 keeps playing meanwhile.
+    if (e.target === gate) { if (shareGate) openPick(); continue; }
+    const i = cards.findIndex(c=>c.el===e.target); if (i >= 0 && i !== active) activate(i);
+  }
 }, {root:$('#feed'),threshold:[.7]});
 function activate(index) {
   active = index; const song = cards[index]?.song; if (!song) return;
@@ -315,6 +391,7 @@ function go(direction) {
   let index = active + direction;
   while (cards[index]?.song.dead) index += direction;
   if (cards[index]) cards[index].el.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+  else if (direction > 0 && gate) gate.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
   else if (direction > 0) notify(discoveryError ? 'Discovery is reconnecting. Please try again shortly.' : explorer?.done || fixture ? 'You’ve reached the end of this dig.' : 'Still digging for the next track…');
 }
 
@@ -410,6 +487,8 @@ function advance() {
   if (playing.source === 'feed') {
     // Activate directly: IntersectionObserver and smooth scrolling do not run while the page is hidden.
     let index = active+1; while (cards[index] && (cards[index].song.dead || isDead(cards[index].song.vid))) index++;
+    // The shared track ended before a dig exists: stop there; the gate is one swipe away.
+    if (!cards[index] && gate) return;
     if (!cards[index]) return go(1);
     activate(index); cards[index].el.scrollIntoView({behavior:document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
     return;
@@ -459,6 +538,13 @@ function onError(k, event) {
   if (!failedFeed && k === current && playing.song?.vid === vid) { renderDock(); advance(); }
 }
 function discardUnavailable(vid) {
+  // The shared track turned out unplayable before any dig: fail soft into Filters.
+  if (sharedCard?.song.vid === vid && digCount() === 0 && playing.source === 'feed') {
+    observer.disconnect(); stopPlayers(); sharedCard = null; gate = null; digLoading = false; cards = []; active = -1;
+    playing = {source:'feed',song:null,list:[],index:-1}; $('#feed').replaceChildren(); renderDock();
+    if (shareGate) return shareMissing();
+    return start();
+  }
   const currentEl = cards[active]?.el, failed = cards[active]?.song.vid === vid;
   // Keep a covered feed's active slot stable until closing its preview restores the feed.
   if (failed && playing.source !== 'feed') return;
@@ -467,6 +553,7 @@ function discardUnavailable(vid) {
     if (card.song.vid !== vid) return true;
     observer.unobserve(card.el); card.el.remove(); return false;
   });
+  if (sharedCard && !cards.includes(sharedCard)) sharedCard = null;
   if (!failed) { active = cards.findIndex(c=>c.el === currentEl); fill(); return; }
   active = nextIndex-1; recoveringAt = nextIndex;
   stopPlayers(); playing = {source:'feed',song:null,list:[],index:-1}; renderDock();
@@ -567,6 +654,15 @@ function renderDock() {
   $('#matchWarning').textContent = warning; $('#matchWarning').hidden = !warning;
 }
 $('#heart').onclick = () => like(playing.song);
+$('#share').onclick = () => shareTrack(playing.song);
+// Native share sheet when the browser has one (iPhone), otherwise copy the link.
+async function shareTrack(song) {
+  if (!song) return;
+  const url = shareURL(location.origin + location.pathname,song);
+  const title = [song.artist,song.trackTitle || song.videoTitle].filter(Boolean).join(' – ');
+  if (navigator.share) { try { await navigator.share({title,url}); return; } catch (error) { if (error?.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(url); notify('Link copied'); } catch { notify(url,15000); }
+}
 async function like(song) {
   if (!song || !model) return;
   const target = actionModel(song), result = await target.toggle(song);
@@ -721,14 +817,17 @@ async function boot() {
     api = fixtureData.createAPI(params); accountAPI = api;
     if (params.has('guest')) { guestSession.mirror = async()=>{}; model = guestSession; }
     else model = new SessionDiscoveries('local-demo',storage,(...args)=>accountAPI.req(...args),()=>{renderDock();renderSession();});
-    await loadWants(); attachPlayers((k,events)=>new fixtureData.FakePlayer(events)); start();
+    await loadWants(); attachPlayers((k,events)=>new fixtureData.FakePlayer(events)); if (share) startShared(); else start();
     // Read-only diagnostics and synthetic player events exist only in the localhost fixture.
-    window.crateFixture = {model,api,players,get playlist(){return playlistIds;},get playing(){return playing;},get active(){return active;}};
+    window.crateFixture = {model,api,players,get playlist(){return playlistIds;},get playing(){return playing;},get active(){return active;},
+      get cards(){return cards.map(c=>c.song.vid);},get shared(){return sharedCard?.song.vid || null;},get gate(){return !!gate;},get shareGate(){return shareGate;}};
     return;
   }
   initYouTube(); api = catalogue; model = guestSession; renderSession();
   const token = localStorage.getItem('dx_token'), username = storage.get('dx_user','');
-  if (token && username) { connect(token,username); if (opts.style || opts.genre || opts.label) start(); else openPick(); }
+  if (token && username) connect(token,username);
+  if (share) startShared();
+  else if (token && username) { if (opts.style || opts.genre || opts.label) start(); else openPick(); }
   else if (storage.get('dx_opts', null)) start(); else openPick();
   if (dryRun) notify('Dry run: wantlist changes are simulated.',10000);
 }

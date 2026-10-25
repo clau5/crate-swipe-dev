@@ -418,6 +418,71 @@ try {
       await live.waitForFunction(()=>document.querySelectorAll('[data-remove]').length===0);assert.deepEqual(writes,['PUT','DELETE']);
     } finally {await isolated.close();}
   });
+  await check('share: link pins that exact track as card 0, first swipe down opens Filters, apply digs from card 1, swipe up returns',async()=>{
+    const context=await browser.newContext({viewport:{width:402,height:874},reducedMotion:'reduce'}), sp=await context.newPage();sp.setDefaultTimeout(15000);
+    sp.on('pageerror',e=>errors.push(e.message));
+    sp.on('request',request=>{if(!request.url().startsWith(base)) requests.push(request.url());});
+    await sp.route('**/*',route=>route.request().url().startsWith(base)?route.continue():route.abort());
+    await context.addInitScript(()=>{
+      Object.defineProperty(Navigator.prototype,'share',{configurable:true,value:function(data){window.__shared=data;return Promise.resolve();}});
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:text=>{window.__copied=text;return Promise.resolve();}}});
+    });
+    try {
+      const fx=()=>sp.evaluate(()=>({cards:window.crateFixture.cards,active:window.crateFixture.active,vid:window.crateFixture.players[0].vid,playing:window.crateFixture.playing.song?.vid,gate:window.crateFixture.gate,shareGate:window.crateFixture.shareGate}));
+      // Sharer side: the share sheet gets a link with only the release and video ids.
+      await sp.goto(base+'/?fixture=1');await sp.waitForFunction(()=>!!window.crateFixture?.playing.song);
+      await sp.locator('#share').click();await sp.waitForFunction(()=>!!window.__shared);
+      assert.deepEqual(await sp.evaluate(()=>window.__shared),{title:'Geoff White – Tried and true',url:base+'/?share=1001&yt=aaaaaaaaaaa'});
+      await sp.evaluate(()=>{delete Navigator.prototype.share;});await sp.locator('#share').click();
+      await sp.waitForFunction(()=>!!window.__copied);assert.equal(await sp.evaluate(()=>window.__copied),base+'/?share=1001&yt=aaaaaaaaaaa');
+      assert.equal(await sp.locator('#status').innerText(),'Link copied');
+      assert.equal(await sp.locator('#share img').evaluate(el=>el.getBoundingClientRect().width),24);
+      // Recipient: a track that is not in any dig, with the sharer's filters nowhere in the link.
+      await sp.goto(base+'/?fixture=1&share=1003&yt=eeeeeeeeeee');
+      await sp.waitForFunction(()=>window.crateFixture?.playing.song?.vid==='eeeeeeeeeee');
+      let s=await fx();assert.deepEqual(s.cards,['eeeeeeeeeee']);assert.equal(s.active,0);assert.equal(s.gate,true);assert.equal(s.shareGate,true);
+      assert.equal(await sp.locator('#track').innerText(),'Second thoughts');assert.equal(await sp.locator('#chip').innerText(),'Pick your dig…');
+      assert.equal(await sp.locator('#pick').isVisible(),false);
+      await sp.locator('#sound').click();await sp.waitForFunction(()=>window.crateFixture.players[0].getPlayerState()===1);
+      await sp.screenshot({path:output+'/share-card0.png'});
+      // First swipe down: Filters, prefilled with the release year only. Card 0 keeps playing.
+      await sp.locator('#feed').evaluate(el=>el.scrollTop=874);await sp.locator('#pick').waitFor({state:'visible'});
+      assert.equal(await sp.locator('#y1').inputValue(),'2001');
+      for(const id of ['genre','style','label','country','y2']) assert.equal(await sp.locator('#'+id).inputValue(),'',id);
+      s=await fx();assert.equal(s.active,0);assert.equal(s.vid,'eeeeeeeeeee');
+      await sp.screenshot({path:output+'/share-filters.png'});
+      // Closing without applying goes back to the shared track.
+      await sp.locator('#closePick').click();await sp.waitForFunction(()=>document.querySelector('#feed').scrollTop===0);
+      assert.equal((await fx()).active,0);await sp.waitForTimeout(200);
+      // Swipe down again, apply: the dig starts at card 1; the link is consumed.
+      await sp.locator('#feed').evaluate(el=>el.scrollTop=874);await sp.locator('#pick').waitFor({state:'visible'});
+      await sp.locator('#goBtn').click();
+      await sp.waitForFunction(()=>window.crateFixture.active===1 && window.crateFixture.players[0].vid!=='eeeeeeeeeee');
+      s=await fx();assert.equal(s.cards[0],'eeeeeeeeeee');assert.ok(s.cards.length>=4,JSON.stringify(s));assert.equal(s.gate,false);assert.equal(s.shareGate,false);
+      assert.equal(s.cards.filter(v=>v==='eeeeeeeeeee').length,1);assert.equal(s.vid,s.cards[1]);
+      assert.match(await sp.locator('#chip').innerText(),/2001/);assert.equal(new URL(sp.url()).searchParams.has('share'),false);
+      assert.equal(await sp.locator('#pick').isVisible(),false);
+      // Swipe up: the shared track again.
+      await sp.locator('#feed').evaluate(el=>el.scrollTop=0);
+      await sp.waitForFunction(()=>window.crateFixture.active===0 && window.crateFixture.players[0].vid==='eeeeeeeeeee');
+      assert.equal(await sp.locator('#track').innerText(),'Second thoughts');
+      // Further down is the dig, not the Filters gate.
+      await sp.locator('#feed').evaluate(el=>el.scrollTop=874*2);await sp.waitForFunction(()=>window.crateFixture.active===2);
+      assert.equal(await sp.locator('#pick').isVisible(),false);
+      // Fail soft: video gone from the release, or a malformed link.
+      for(const [query,year] of [['share=1003&yt=zzzzzzzzzzz','2001'],['share=abc','']]) {
+        await sp.goto(base+'/?fixture=1&'+query);await sp.locator('#pick').waitFor({state:'visible'});
+        assert.match(await sp.locator('#status').innerText(),/Couldn’t find that track/);assert.equal(await sp.locator('#y1').inputValue(),year);
+        assert.equal(await sp.evaluate(()=>window.crateFixture.cards.length),0);
+      }
+      await sp.locator('#goBtn').click();await sp.waitForFunction(()=>window.crateFixture.active===0 && !!window.crateFixture.playing.song);
+      assert.equal(await sp.evaluate(()=>window.crateFixture.cards[0]),'aaaaaaaaaaa');
+      // The shared video turning out dead on play also falls back to Filters.
+      await sp.goto(base+'/?fixture=1&share=1003&yt=eeeeeeeeeee');await sp.waitForFunction(()=>window.crateFixture?.playing.song?.vid==='eeeeeeeeeee');
+      await sp.evaluate(()=>window.crateFixture.players[0].events.onError({data:150}));await sp.locator('#pick').waitFor({state:'visible'});
+      assert.match(await sp.locator('#status').innerText(),/Couldn’t find that track/);
+    } finally {await context.close();}
+  });
   assert.deepEqual(errors,[]);
   await writeFile(output+'/browser-report.json',JSON.stringify({browser:process.env.BROWSER||'chromium',version:browser.version(),results,errors,externalRequests:requests},null,2));
   console.log(`${results.length} browser checks passed; no browser errors or external requests.`);

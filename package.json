@@ -1,12 +1,12 @@
 {
   "name": "crate-swipe",
-  "version": "3.1.6-dev",
+  "version": "3.1.7-dev",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs",
     "test": "node --test tests/*.test.js",
-    "check": "node --check app.js && node --check core.js && node --check session.js && node --check video-availability.js && node --check catalogue-client.js && node --check config.js && node --check playlist.js && node --check scripts/serve.mjs",
+    "check": "node --check app.js && node --check core.js && node --check session.js && node --check video-availability.js && node --check catalogue-client.js && node --check config.js && node --check playlist.js && node --check share.js && node --check scripts/serve.mjs",
     "test:browser": "node tests/browser.mjs && node tests/guest-browser.mjs"
   },
   "engines": {"node": ">=20"},
