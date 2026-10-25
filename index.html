@@ -6,18 +6,33 @@
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="app-version" content="crate-swipe 3.1.7-dev">
+<meta name="app-version" content="crate-swipe 3.1.8-dev">
 <meta name="description" content="Dig through vinyl. Discover a track, save a record, find your next favourite.">
 <title>Crate Swipe</title>
 <link rel="icon" href="assets/icons/session.svg" type="image/svg+xml">
 <link rel="preload" href="assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preconnect" href="https://www.youtube.com">
+<link rel="preconnect" href="https://api.discogs.com" crossorigin>
+<link rel="preconnect" href="https://i.ytimg.com">
+<link rel="modulepreload" href="app.js"><link rel="modulepreload" href="core.js"><link rel="modulepreload" href="share.js"><link rel="modulepreload" href="session.js"><link rel="modulepreload" href="playlist.js"><link rel="modulepreload" href="video-availability.js"><link rel="modulepreload" href="catalogue-client.js"><link rel="modulepreload" href="config.js">
 <link rel="stylesheet" href="styles.css">
+<script>
+// 3.1.8-dev: start the YouTube API in parallel with the app modules (not after them), and never
+// leave a stuck screen: if the app hasn't booted after 15 s, say so and offer a reload.
+(function(){
+  var q=location.search, local=/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  if(!(local && /[?&]fixture/.test(q))){var s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';s.async=true;s.id='ytApi';document.head.appendChild(s);}
+  window.crateBootFailed=function(){if(window.crateBooted)return;var m=document.getElementById('emptyMsg'),b=document.getElementById('emptyAction'),sp=document.getElementById('spin');if(!m)return;
+    sp.hidden=true;m.textContent='Crate is taking too long to load. Check your connection and reload.';b.textContent='Reload';b.hidden=false;b.onclick=function(){location.reload();};};
+  setTimeout(window.crateBootFailed,15000);
+})();
+</script>
 </head>
 <body>
 <div id="backdrop" aria-hidden="true"></div>
 <main id="feed" aria-label="Vinyl discovery feed"></main>
-<div id="empty"><div class="spin" id="spin" hidden></div><p id="emptyMsg">Find something worth keeping.</p><button class="pill" id="emptyAction">Choose genre & year</button></div>
-<header id="bar"><button id="chip" aria-label="Change discovery filters">Pick genre & year…</button><button id="sessionButton" class="circle" aria-label="Open this session"><img src="assets/icons/session.svg" width="24" height="24" alt=""></button></header>
+<div id="empty"><div class="spin" id="spin"></div><p id="emptyMsg">Loading…</p><button class="pill" id="emptyAction" hidden>Choose genre & year</button></div>
+<header id="bar"><button id="chip" aria-label="Change discovery filters">Loading…</button><button id="sessionButton" class="circle" aria-label="Open this session"><img src="assets/icons/session.svg" width="24" height="24" alt=""></button></header>
 <div id="status" role="status" aria-live="polite"></div>
 <div id="pA"><div id="yt0"></div><div class="shield"></div></div>
 <div id="paused" aria-hidden="true">Ⅱ</div>
@@ -57,7 +72,7 @@
   <div class="row" style="margin-top:14px"><button class="pill" id="resetSeen">Reset seen songs</button><button class="pill" id="changeTok">Change token</button></div>
   <p class="small">Only YouTube videos linked on Discogs releases are used. Vinyl only. Swipe up/down to listen. Tap the heart to save a find to your guest session, or directly to your wantlist when connected. Tap share to send someone the song you're hearing. Keys: Space pause · L like · E explore · M mute.</p>
   <p class="small" id="seenCount"></p>
-  <p class="small">Version 3.1.7-dev</p>
+  <p class="small">Version 3.1.8-dev</p>
   <details><summary>Listening stats</summary><div class="stats" id="stats"></div><button class="pill" id="resetStats">Reset stats</button></details>
 
 </dialog>
@@ -72,5 +87,5 @@
 </dialog>
 <dialog class="sheet" id="release" aria-label="Release details"><div id="releaseContent"></div></dialog>
 <div id="dockHome"></div>
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js" onerror="crateBootFailed()"></script>
 </body></html>

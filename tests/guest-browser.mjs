@@ -22,7 +22,7 @@ async function setup({existing=false,unavailable=false,dry=false}={}) {
     if(url.origin===new URL(base).origin && url.pathname==='/config.js')return route.fulfill({contentType:'text/javascript',body:"export const sharedCatalogueToken='test-shared-token';"});
     else if(url.origin===new URL(base).origin && url.pathname.startsWith('/api/'))throw Error('Static guest flow must not require a backend');
     else if(request.url().startsWith(base))return route.continue();
-    else if(url.hostname==='www.youtube.com'&&url.pathname==='/iframe_api')return route.fulfill({contentType:'text/javascript',body:`window.YT={Player:class extends (${FakePlayer.toString()}){constructor(id,options){super(options.events)}}};window.onYouTubeIframeAPIReady();`});
+    else if(url.hostname==='www.youtube.com'&&url.pathname==='/iframe_api')return route.fulfill({contentType:'text/javascript',body:`window.YT={Player:class extends (${FakePlayer.toString()}){constructor(id,options){super(options.events)}}};window.onYouTubeIframeAPIReady&&window.onYouTubeIframeAPIReady();`});
     else if(url.hostname==='www.youtube.com'&&url.pathname==='/oembed')body={type:'video'};
     else if(url.hostname==='images.example.test')return route.fulfill({contentType:'image/png',body:await readFile(new URL('./reference-cover.png',import.meta.url))});
     else if(url.hostname==='api.discogs.com') {

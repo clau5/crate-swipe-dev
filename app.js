@@ -315,6 +315,14 @@ function fill() {
   }
   preload();
 }
+// The cold-start home ("Find something worth keeping."). The static page shows a loading state instead,
+// so this only appears when there is genuinely no share link and no dig to resume.
+function showHome() {
+  if (shareGate || sharedCard || cards.length) return;
+  $('#chip').textContent = 'Pick genre & year…';
+  $('#empty').hidden = false; $('#spin').hidden = true; $('#emptyMsg').textContent = 'Find something worth keeping.';
+  $('#emptyAction').hidden = false; $('#emptyAction').dataset.connect = ''; $('#emptyAction').textContent = 'Choose genre & year';
+}
 const digCount = () => cards.length - (sharedCard && cards[0] === sharedCard ? 1 : 0);
 function addGate() {
   gate = document.createElement('section'); gate.className = 'card gate'; gate.setAttribute('aria-label','Start your own dig');
@@ -341,9 +349,13 @@ async function startShared() {
   $('#empty').hidden = false; $('#spin').hidden = false; $('#emptyAction').hidden = true; $('#emptyMsg').textContent = 'Loading the shared track…';
   let rel = null, song = null;
   if (!share.invalid) {
-    try { rel = await loadRelease(share.releaseId); } catch {}
-    song = sharedSong(rel,share.vid);
-    if (song && (deadIds.has(song.vid) || await videoAvailability.check(song.vid) === false)) song = null;
+    // Paint the video's own thumbnail behind the loader right away (public i.ytimg.com image, no API call).
+    if (!fixture) $('#backdrop').style.backgroundImage = `url("https://i.ytimg.com/vi/${share.vid}/hqdefault.jpg")`;
+    // Release lookup and the YouTube availability probe run in parallel, not one after the other.
+    const [loaded, available] = await Promise.all([loadRelease(share.releaseId).catch(() => null), deadIds.has(share.vid) ? false : videoAvailability.check(share.vid)]);
+    rel = loaded; song = sharedSong(rel,share.vid);
+    // A video YouTube says is gone stays card 0 (with its YouTube link) instead of resetting the app.
+    if (song && available === false) deadIds.add(song.vid);
   }
   sharePrefillOpts = sharePrefill(rel); $('#spin').hidden = true;
   if (!song) return shareMissing();
@@ -538,12 +550,15 @@ function onError(k, event) {
   if (!failedFeed && k === current && playing.song?.vid === vid) { renderDock(); advance(); }
 }
 function discardUnavailable(vid) {
-  // The shared track turned out unplayable before any dig: fail soft into Filters.
-  if (sharedCard?.song.vid === vid && digCount() === 0 && playing.source === 'feed') {
-    observer.disconnect(); stopPlayers(); sharedCard = null; gate = null; digLoading = false; cards = []; active = -1;
-    playing = {source:'feed',song:null,list:[],index:-1}; $('#feed').replaceChildren(); renderDock();
-    if (shareGate) return shareMissing();
-    return start();
+  // The shared track can't play here (removed or embedding blocked): keep it pinned as card 0 with its
+  // YouTube link instead of resetting the feed. The gate / dig is still one swipe down.
+  if (sharedCard?.song.vid === vid) {
+    if (playing.source === 'feed' && cards[active] === sharedCard) {
+      stopPlayers(); playing = {source:'feed',song:sharedCard.song,list:[],index:active}; setBackdrop(sharedCard.song); renderDock();
+      $('#empty').hidden = true;
+      notify('YouTube won’t play this track here. Open it with the YouTube link, or swipe down to start your own dig.',10000);
+    }
+    return;
   }
   const currentEl = cards[active]?.el, failed = cards[active]?.song.vid === vid;
   // Keep a covered feed's active slot stable until closing its preview restores the feed.
@@ -625,12 +640,18 @@ function attachPlayers(factory) {
   });
 }
 function initYouTube() {
-  window.onYouTubeIframeAPIReady = () => attachPlayers((k,events) => new YT.Player('yt'+k, {
+  let attached = false;
+  window.onYouTubeIframeAPIReady = () => !attached && (attached = true) && attachPlayers((k,events) => new YT.Player('yt'+k, {
     host:'https://www.youtube.com',width:'100%',height:'100%',
     playerVars:{playsinline:1,autoplay:0,mute:1,controls:0,cc_load_policy:0,iv_load_policy:3,fs:0,rel:0,disablekb:1,enablejsapi:1,origin:location.origin},events
   }));
+  const failed = () => notify('YouTube couldn’t load. Check your connection or open the video link.',10000);
+  // index.html starts iframe_api in parallel with the app modules; it may already be loaded.
+  if (window.YT?.Player) return window.onYouTubeIframeAPIReady();
+  const early = document.getElementById('ytApi');
+  if (early) { early.addEventListener('error',failed); return; }
   const script = document.createElement('script'); script.src = 'https://www.youtube.com/iframe_api';
-  script.onerror = () => notify('YouTube couldn’t load. Check your connection or open the video link.',10000); document.head.append(script);
+  script.onerror = failed; document.head.append(script);
 }
 
 function renderDock() {
@@ -810,6 +831,7 @@ document.addEventListener('keydown', event => {
 });
 
 async function boot() {
+  window.crateBooted = true;
   guestSession = new GuestDiscoveries(storage, id=>dryRun ? Promise.resolve({dryRun:true}) : catalogue.addShared(id), ()=>{renderDock();renderSession();});
   if (fixture) {
     fixtureData = await import('./tests/fixture.js'); opts = {...opts,genre:'Electronic',style:'Minimal techno',y1:'2000',y2:'2001'};
@@ -827,8 +849,8 @@ async function boot() {
   const token = localStorage.getItem('dx_token'), username = storage.get('dx_user','');
   if (token && username) connect(token,username);
   if (share) startShared();
-  else if (token && username) { if (opts.style || opts.genre || opts.label) start(); else openPick(); }
-  else if (storage.get('dx_opts', null)) start(); else openPick();
+  else if (token && username) { if (opts.style || opts.genre || opts.label) start(); else { showHome(); openPick(); } }
+  else if (storage.get('dx_opts', null)) start(); else { showHome(); openPick(); }
   if (dryRun) notify('Dry run: wantlist changes are simulated.',10000);
 }
-boot().catch(() => notify('Couldn’t start Crate. Reload to try again.',10000));
+boot().catch(() => { notify('Couldn’t start Crate. Reload to try again.',10000); window.crateBooted = false; window.crateBootFailed?.(); });

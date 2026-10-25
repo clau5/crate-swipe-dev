@@ -359,7 +359,7 @@ try {
   await check('onboarding and filters render without credentials or external requests',async()=>{
     await page.setViewportSize({width:402,height:874});await page.locator('#chip').click();await page.screenshot({path:output+'/filters-mobile.png'});
     await page.locator('#changeTok').click();await page.screenshot({path:output+'/onboarding-mobile.png'});
-    assert.equal(await page.locator('#tok').inputValue(),'');assert.equal(requests.length,0);
+    assert.equal(await page.locator('#tok').inputValue(),'');assert.equal(requests.length,0,JSON.stringify([...new Set(requests)]));
   });
   await check('missing artwork and uncertain matching stay usable',async()=>{
     await page.locator('#closeSetup').click();
@@ -387,7 +387,7 @@ try {
     await live.route('**/*',async route=>{
       const request=route.request(),url=new URL(request.url());
       if(request.url().startsWith(base)) return route.continue();
-      if(url.hostname==='www.youtube.com' && url.pathname==='/iframe_api') return route.fulfill({contentType:'text/javascript',body:`window.YT={Player:class extends (${FakePlayer.toString()}){constructor(id,options){super(options.events)}}};window.onYouTubeIframeAPIReady();`});
+      if(url.hostname==='www.youtube.com' && url.pathname==='/iframe_api') return route.fulfill({contentType:'text/javascript',body:`window.YT={Player:class extends (${FakePlayer.toString()}){constructor(id,options){super(options.events)}}};window.onYouTubeIframeAPIReady&&window.onYouTubeIframeAPIReady();`});
       if(url.hostname==='www.youtube.com' && url.pathname==='/oembed') return route.fulfill({contentType:'application/json',body:JSON.stringify({type:'video'})});
       if(url.hostname!=='api.discogs.com') return route.abort();
       assert.equal(request.headers().authorization,'Discogs token=local-test-token');
@@ -477,10 +477,20 @@ try {
       }
       await sp.locator('#goBtn').click();await sp.waitForFunction(()=>window.crateFixture.active===0 && !!window.crateFixture.playing.song);
       assert.equal(await sp.evaluate(()=>window.crateFixture.cards[0]),'aaaaaaaaaaa');
-      // The shared video turning out dead on play also falls back to Filters.
+      // 3.1.8-dev: the shared video failing on play keeps card 0 (no reset to the empty home, no Filters pop).
       await sp.goto(base+'/?fixture=1&share=1003&yt=eeeeeeeeeee');await sp.waitForFunction(()=>window.crateFixture?.playing.song?.vid==='eeeeeeeeeee');
-      await sp.evaluate(()=>window.crateFixture.players[0].events.onError({data:150}));await sp.locator('#pick').waitFor({state:'visible'});
-      assert.match(await sp.locator('#status').innerText(),/Couldn’t find that track/);
+      await sp.evaluate(()=>window.crateFixture.players[0].events.onError({data:150}));
+      await sp.waitForFunction(()=>/won’t play this track/.test(document.querySelector('#status').textContent));
+      s=await fx();assert.deepEqual(s.cards,['eeeeeeeeeee']);assert.equal(s.gate,true);assert.equal(s.playing,'eeeeeeeeeee');
+      assert.equal(await sp.locator('#pick').isVisible(),false);assert.equal(await sp.locator('#empty').isVisible(),false);
+      assert.equal(await sp.locator('#dock').isVisible(),true);
+      // 3.1.8-dev: opening a share link never shows the cold-start home, not even for a frame.
+      await sp.addInitScript(()=>{window.__homeSeen=false;new MutationObserver(()=>{const m=document.querySelector('#emptyMsg'),e=document.querySelector('#empty');if(m&&e&&!e.hidden&&/Find something worth keeping/.test(m.textContent))window.__homeSeen=true;}).observe(document,{subtree:true,childList:true,characterData:true,attributes:true});});
+      await sp.goto(base+'/?fixture=1&share=1002&yt=bbbbbbbbbbb');await sp.waitForFunction(()=>window.crateFixture?.playing.song?.vid==='bbbbbbbbbbb');
+      assert.equal(await sp.evaluate(()=>window.__homeSeen),false);await sp.evaluate(()=>localStorage.removeItem('dx_stats'));
+      // The static page is a loading state; the home only appears once boot finds no share and no dig.
+      const html=await (await sp.request.get(base+'/index.html')).text();
+      assert.match(html,/<p id="emptyMsg">Loading…<\/p>/);assert.doesNotMatch(html,/<p id="emptyMsg">Find something/);
     } finally {await context.close();}
   });
   assert.deepEqual(errors,[]);
