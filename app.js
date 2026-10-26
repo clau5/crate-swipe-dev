@@ -241,6 +241,23 @@ function setBackdrop(song) {
   const src = https(song?.cover || song?.cover2) || (fixture ? song?.cover : '');
   $('#backdrop').style.backgroundImage = src ? `url("${src.replace(/["\\\n\r]/g, '')}")` : 'none';
 }
+// 3.1.9: carry the next few unplayed cards of a dig over to the next visit, so a cold open with the
+// same filters shows a playable card straight after boot while the new dig warms up behind it.
+const digSig = () => JSON.stringify([opts.genre||'',opts.style||'',opts.y1||'',opts.y2||'',opts.label||'',opts.country||'']);
+let carried = new Set();
+function saveNext() {
+  if (fixture || !model || !cards.length) return;
+  const songs = [...cards.slice(active+1).filter(c => c !== sharedCard && !c.song.dead).map(c => c.song), ...pool]
+    .filter(s => !seen.has(s.vid) && !deadIds.has(s.vid)).slice(0,4);
+  storage.set('dx_next',{sig:digSig(),t:Date.now(),songs});
+}
+function restoreNext() {
+  const saved = storage.get('dx_next',null); carried = new Set();
+  if (!saved || saved.sig !== digSig() || !(Date.now()-saved.t < 3*864e5) || !Array.isArray(saved.songs)) return;
+  for (const s of saved.songs) if (s && /^[\w-]{11}$/.test(s.vid) && !seen.has(s.vid) && !deadIds.has(s.vid) && !carried.has(s.vid)) { carried.add(s.vid); addCard({...s}); }
+}
+addEventListener('pagehide',saveNext);
+document.addEventListener('visibilitychange',() => { if (document.hidden) saveNext(); });
 async function start() {
   if (!model) return;
   if (explorer) explorer.stopped = true;
@@ -260,6 +277,7 @@ async function start() {
     $('#feed').append(keep.el); observer.observe(keep.el); addGate(); setGate('Digging through Discogs…',true);
     $('#empty').hidden = true; $('#feed').scrollTop = gate.offsetTop;
   }
+  if (!keep && !fixture) { restoreNext(); if (cards.length) fill(); }
   if (fixture) {
     const checks = await Promise.all(fixtureData.songs.map(s => videoAvailability.check(s.vid)));
     if (generation !== feedGeneration) return;
@@ -268,7 +286,7 @@ async function start() {
     if (digLoading && cards.length < 2) setGate('No playable tracks for this dig. Try another filter or reset seen songs.');
     return;
   }
-  const next = new Explorer(discoveryClient, {...opts, years, cache,hitTarget:model.isGuest?30:300, skipVid:{has:id => deadIds.has(id) || id === sharedCard?.song.vid || (opts.hideSeen !== false && seen.has(id))},
+  const next = new Explorer(discoveryClient, {...opts, years, cache,hitTarget:model.isGuest?30:300, skipVid:{has:id => deadIds.has(id) || carried.has(id) || id === sharedCard?.song.vid || (opts.hideSeen !== false && seen.has(id))},
     checkVideo:id => videoAvailability.check(id),
     shouldPause:() => Math.max(0,cards.length-active-1) + poolVariety(pool,cards.slice(-gap).map(c=>c.song),gap) >= buffer,
     onSongs:(songs, x) => { if (explorer !== x) return; guestServiceUnavailable = false; const choice = primaryPick(songs); pool.push(choice.pick); reserve.push(...choice.rest); fill(); },
@@ -397,7 +415,7 @@ function activate(index) {
   active = index; const song = cards[index]?.song; if (!song) return;
   if (deadIds.has(song.vid)) return discardUnavailable(song.vid);
   if (!seen.has(song.vid)) { seen.add(song.vid); storage.set('dx_seen',[...seen].slice(-20000)); }
-  play(song,'feed',[],index); fill();
+  play(song,'feed',[],index); fill(); saveNext();
 }
 function go(direction) {
   let index = active + direction;

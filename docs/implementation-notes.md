@@ -138,3 +138,25 @@ Dev-only (`clau5/crate-swipe-dev`). Production is untouched.
 - **Faster cold open.** `<link rel="modulepreload">` for all app modules (no import waterfall), preconnects to YouTube / Discogs / i.ytimg, and the YouTube iframe API now starts loading from `index.html` in parallel with the modules instead of after `boot()`. Opening a share runs the Discogs release lookup and the YouTube availability probe in parallel (3.1.7 ran them back to back, up to +4 s), and paints the video thumbnail behind the loader immediately. 3.1.7 had added only the small `share.js`; the slowness was the sequential share path on top of the late YouTube API.
 - **Shared track never resets the app.** If the shared video can't play (YouTube 100/101/150, or the availability probe says it's gone), card 0 stays pinned with its dock and YouTube link, a notice explains it, and the gate is still one swipe down. Before, it cleared the feed and opened Filters / the empty state. Autoplay being blocked still keeps card 0 with the tap-for-sound prompt. "Couldn’t find that track" now only appears when the link is malformed, the release can't be loaded, or the video isn't on the release.
 - **Tests.** Browser checks (Chromium + WebKit): opening a share never shows the home text even for a frame (MutationObserver), the static HTML is a loading state, and a dead shared video keeps card 0 (no Filters pop, no empty screen). YouTube API stubs mirror the real API's guarded `onYouTubeIframeAPIReady` call.
+
+## 3.1.9-dev — faster first card on a cold open
+
+Dev-only (`clau5/crate-swipe-dev`). Production is untouched.
+
+- **What was slow (measured).** Boot itself was fine (~0.2–0.4 s to `boot()` on Pages). The wait was the dig behind "Digging through Discogs…": boot → first card took ~2.4–2.9 s in Chromium and 2.5–3.6 s in WebKit even on a fast link, every single open. The waterfall: Discogs search page 1 → (1.1 s pacing gap) → a *second* search for a random page → (1.1 s gap) → first release → YouTube oEmbed checks → card. Every release without videos added another 1.1 s+ step, one after the other.
+- **Discogs client: burst + parallel.** The fixed 1.1 s gap before every request is now a token bucket (burst 6, refill one per 1.1 s, so the long-run rate is unchanged and stays under Discogs' 60/min). Up to 3 GETs run in parallel. Writes (wantlist PUT/DELETE) still run alone and in order. A 429 or network error empties the bucket.
+- **Explorer.** A freshly fetched page 1 is used right away for the first releases instead of spending another search call on a random page (a cached page 1 keeps the random draw for variety). Until the first song is found, up to 3 releases are scanned at once, so video-less releases no longer queue up one by one.
+- **Carry-over cards.** The next ≤4 unplayed cards of a dig are saved (`dx_next`, on every swipe, `pagehide` and when the page is hidden). A later open with the same filters (within 3 days) shows them right after boot while the new dig warms up behind them. Seen/dead videos are filtered out, carried videos are excluded from the new dig, share links and fixtures don't use it.
+- **serve.mjs (used by Ample).** `no-store` → `no-cache` + ETag (repeat opens get 304s) and gzip for text. Pages already did both.
+- **Numbers** (`docs/test-evidence/measure-cold-open.mjs`, live Discogs/YouTube, saved filters Techno · 1995, fresh browser profile):
+
+  | | before (3.1.8-dev on Pages) | after (3.1.9-dev local) |
+  |---|---|---|
+  | Chromium, cold, boot → first card | 2.4–2.7 s | 0.5–0.6 s |
+  | Chromium +150 ms RTT, cold | 2.6 s | 0.6–0.8 s (one 2.5 s outlier when the first 3 releases had no videos) |
+  | Chromium +150 ms RTT, reopen | 1.5–1.6 s | 0 s (carried card at boot) |
+  | WebKit, cold | 2.5–3.6 s | 0.7 s |
+  | WebKit, reopen | 1.3–1.6 s | 0 s |
+
+- **Ample host.** `crate.ample.run` and `62akuuvcx28e.ample.run` are the same deployment. It runs `serve.mjs` on a small Node server in San José that auto-pauses after 60 s idle and resumes from a snapshot on the next request, so the first open after a pause has to wait for that wake-up (plus the Atlantic round trip) before any HTML arrives. That black screen is outside the app. GitHub Pages (CDN, gzip, 10 min cache) stays the fast host for daily use.
+- **Not fixable here.** The YouTube player itself (iframe + ~1 MB of player JS) and Discogs/YouTube response times. Release fetches for the first dig are still network-bound (≈1 round trip each). Pacing is per browser, so the guest token's 60/min limit is shared by every guest.

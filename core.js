@@ -147,24 +147,35 @@ function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random
 
 // Rate-limited Discogs client: 60 req/min authenticated -> one request every 1.1 s, with priorities.
 class Discogs{
-  constructor(token,opts={}){this.token=token;this.gap=opts.gap||1100;this.q=[];this.busy=false;this.last=0;this.dry=!!opts.dryRun;this.ua=opts.userAgent;this.count=0;this.dryLog=[];
+  // 3.1.9: token bucket instead of a fixed 1.1 s gap before every call. A cold open may burst a few
+  // requests (search + first releases) back to back and up to 3 GETs run in parallel; the long-run
+  // rate stays at one call per `gap` (Discogs allows 60/min). Writes run alone, in queue order.
+  constructor(token,opts={}){this.token=token;this.gap=opts.gap||1100;this.burst=opts.burst??6;this.parallel=opts.parallel||3;
+    this.tokens=this.burst;this.refilled=Date.now();this.active=0;this.writing=false;this.timer=null;this.q=[];this.dry=!!opts.dryRun;this.ua=opts.userAgent;this.count=0;this.dryLog=[];
     this.onAuthError=opts.onAuthError||(()=>{});this.onRateLimit=opts.onRateLimit||(()=>{});}
   req(method,path,prio=1){return new Promise((res,rej)=>{this.q.push({method,path,prio,res,rej});this.q.sort((a,b)=>b.prio-a.prio);this._pump();});}
   get(p,prio){return this.req('GET',p,prio);}
-  async _pump(){
-    if(this.busy)return;this.busy=true;
-    while(this.q.length){
-      const job=this.q.shift();
-      if(this.dry&&job.method!=='GET'){this.dryLog.push(job.method+' '+job.path);job.res({dryRun:true,method:job.method,path:job.path});continue;}
-      const wait=this.last+this.gap-Date.now();if(wait>0)await new Promise(r=>setTimeout(r,wait));
+  _take(){const now=Date.now();this.tokens=Math.min(this.burst,this.tokens+(now-this.refilled)/this.gap);this.refilled=now;
+    if(this.tokens>=1){this.tokens--;return 0;}return Math.ceil((1-this.tokens)*this.gap);}
+  _pump(){
+    while(this.q.length&&!this.timer&&!this.writing&&this.active<this.parallel){
+      const job=this.q[0];
+      if(this.dry&&job.method!=='GET'){this.q.shift();this.dryLog.push(job.method+' '+job.path);job.res({dryRun:true,method:job.method,path:job.path});continue;}
+      const write=job.method!=='GET';if(write&&this.active)return;
+      const wait=this._take();if(wait>0){this.timer=setTimeout(()=>{this.timer=null;this._pump();},wait);return;}
+      this.q.shift();this.active++;if(write)this.writing=true;
+      this._run(job).finally(()=>{this.active--;if(write)this.writing=false;this._pump();});
+    }
+  }
+  async _run(job){
       let tries=0;
       for(;;){
-        this.last=Date.now();this.count++;
+        this.count++;
         try{
           const h={'Authorization':'Discogs token='+this.token};
           if(this.ua)h['User-Agent']=this.ua;
           const r=await fetch('https://api.discogs.com'+job.path,{method:job.method,headers:h});
-          if(r.status===429&&tries<6){tries++;const w=10000*tries;this.onRateLimit(w);await new Promise(x=>setTimeout(x,w));continue;}
+          if(r.status===429&&tries<6){tries++;this.tokens=0;const w=10000*tries;this.onRateLimit(w);await new Promise(x=>setTimeout(x,w));continue;}
           if(r.status===401||r.status===403&&job.path.startsWith('/oauth')){this.onAuthError(r.status);job.rej(Object.assign(new Error('auth '+r.status),{status:r.status}));break;}
           if(r.status>=500&&tries<2){tries++;await new Promise(x=>setTimeout(x,3000));continue;}
           const txt=await r.text();let body={};try{body=txt?JSON.parse(txt):{};}catch(e){}
@@ -174,11 +185,9 @@ class Discogs{
         }catch(e){
           // Discogs sends 401 (and possibly 429) without CORS headers, so the browser only sees a network error.
           // Back off like a rate limit (10 s, 20 s, 30 s) and tell the UI, then give up.
-          if(tries<3){tries++;const w=10000*tries;this.onRateLimit(w,true);await new Promise(x=>setTimeout(x,w));continue;}
+          if(tries<3){tries++;this.tokens=0;const w=10000*tries;this.onRateLimit(w,true);await new Promise(x=>setTimeout(x,w));continue;}
           job.rej(e);break;}
       }
-    }
-    this.busy=false;
   }
 }
 
@@ -202,13 +211,16 @@ class Explorer{
   }
   async _page(year,page){
     const path=this.qs(year,page);
+    const before=this.cacheHits;
     const d=await this._cached('s:'+path,7,()=>this.api.get(path,1),d=>({pagination:d.pagination,results:(d.results||[]).filter(r=>r.type==='release').map(r=>({id:r.id,type:r.type,master_id:r.master_id,title:r.title,year:r.year,label:r.label,cover_image:r.cover_image,thumb:r.thumb,country:r.country,in_wantlist:r.user_data&&r.user_data.in_wantlist}))}));
     if(page===1&&!this.page1.has(year)){
       const pages=Math.min(d.pagination?d.pagination.pages:1,100); // Discogs search stops at 10,000 results (100 pages x 100)
       this.total+=d.pagination?d.pagination.items:0;
       for(let p=2;p<=pages;p++)this.pending.push([year,p]);
       // page 1 is always the same 100 releases for a dig: with more than 3 pages, file it as just another page (drawn at random later, no extra call)
-      if(pages>3){this.page1.set(year,d);this.pending.push([year,1]);return;}
+      // 3.1.9: when page 1 was just fetched for the first dig, use it now instead of spending another
+      // search call on a random page before the first release (a cached page 1 keeps the random draw).
+      if(pages>3&&this.cacheHits!==before){this.page1.set(year,d);this.pending.push([year,1]);return;}
       this.page1.set(year,null);
     }
     const rs=d.results||[];
@@ -233,12 +245,24 @@ class Explorer{
       if(this.hits.length<target&&!this.exhausted){try{await this._nextHits();}catch(e){this.onProgress(this,e);if(e.status===401)break;await new Promise(r=>setTimeout(r,3000));}
         continue;}
       if(!this.hits.length)break;
-      const hit=this.hits.splice(Math.floor(Math.random()*this.hits.length),1)[0];
-      // another pressing of a record that already gave songs: skip before any release call
-      if(hit.master_id&&this.seenMaster.has(hit.master_id)){this.state.stats.sameMaster=(this.state.stats.sameMaster||0)+1;continue;}
+      // 3.1.9: until the first song is found, scan up to 3 releases at once (many have no videos),
+      // so the first card doesn't wait on a chain of video-less releases.
+      const n=this.withSongs===0?Math.min(3,this.hits.length,this.maxReleases-this.fetched):1,batch=[];
+      while(batch.length<n&&this.hits.length){
+        const hit=this.hits.splice(Math.floor(Math.random()*this.hits.length),1)[0];
+        // another pressing of a record that already gave songs: skip before any release call
+        if(hit.master_id&&this.seenMaster.has(hit.master_id)){this.state.stats.sameMaster=(this.state.stats.sameMaster||0)+1;continue;}
+        batch.push(hit);
+      }
+      if(!batch.length)continue;
+      await Promise.all(batch.map(hit=>this._scan(hit)));
+    }
+    this.done=true;this.onProgress(this);
+  }
+  async _scan(hit){
       this.scanned++;
-      let rel;try{rel=await this._cached('r:'+hit.id,90,()=>this.api.get('/releases/'+hit.id,1),slimRelease);}catch(e){this.onProgress(this,e);continue;}
-      if(this.stopped)break;
+      let rel;try{rel=await this._cached('r:'+hit.id,90,()=>this.api.get('/releases/'+hit.id,1),slimRelease);}catch(e){this.onProgress(this,e);return;}
+      if(this.stopped)return;
       this.fetched++;
       if(rel.videos&&rel.videos.length)this.state.stats.releasesWithVideos=(this.state.stats.releasesWithVideos||0)+1;
       this.releases.set(rel.id,{rel,hit});
@@ -247,14 +271,14 @@ class Explorer{
       if(this.o.checkVideo){
         const videos=rel.videos||[];
         const checks=await Promise.all(videos.map(v=>{const id=ytId(v.uri);return id&&v.embed!==false&&!this.state.skipVid?.has(id)?this.o.checkVideo(id):true;}));
-        if(this.stopped)break;
+        if(this.stopped)return;
         playable={...rel,videos:videos.filter((v,i)=>checks[i]!==false)};
       }
+      const m=rel.master_id||hit.master_id;
+      if(m&&this.seenMaster.has(m)){this.state.stats.sameMaster=(this.state.stats.sameMaster||0)+1;this.onProgress(this);return;}
       const songs=releaseToSongs(playable,hit,this.state);
-      if(songs.length){this.withSongs++;const m=rel.master_id||hit.master_id;if(m)this.seenMaster.add(m);this.onSongs(songs,this);}
+      if(songs.length){this.withSongs++;if(m)this.seenMaster.add(m);this.onSongs(songs,this);}
       this.onProgress(this);
-    }
-    this.done=true;this.onProgress(this);
   }
 }
 export {songKeys,relKeys,pickNext,chooseNext,primaryPick,adaptiveGap,poolVariety,norm,cleanTitle,mixName,matchTrack,songCheck,releaseToSongs,slimRelease,flattenTracks,ytId,parseDur,dice,artistString,Discogs,Explorer,shuffle,GENRES,STYLES};
