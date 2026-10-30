@@ -15,9 +15,9 @@ const context = await browser.newContext({viewport:{width:402,height:874},reduce
 const page = await context.newPage();
 page.setDefaultTimeout(15000);
 page.setDefaultNavigationTimeout(15000);
-// WebKit reports an oEmbed probe cancelled by a navigation (or by the abort route below) as a page error. The app
-// already treats that as "unknown" (VideoAvailability.probe catches it), so it is noise here, not an app error.
-const pageError=e=>{if(!/\/oembed\?.* due to access control checks\.$/.test(e.message)) errors.push(e.message);};
+// WebKit reports a Discogs/oEmbed fetch cancelled by a navigation (or by the abort route below) as a page error. The
+// app already handles those (oEmbed: unknown; Discogs: retried/dropped with the dig), so it is noise, not an app error.
+const pageError=e=>{if(!/(www\.youtube\.com\/oembed\?|api\.discogs\.com\/).* due to access control checks\.$/.test(e.message)) errors.push(e.message);};
 page.on('pageerror',pageError);
 page.on('request',request=>{if(!request.url().startsWith(base)) requests.push(request.url());});
 await page.route('**/*',route=>route.request().url().startsWith(base)?route.continue():route.abort());
