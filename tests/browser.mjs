@@ -422,7 +422,9 @@ try {
     const context=await browser.newContext({viewport:{width:402,height:874},reducedMotion:'reduce'}), sp=await context.newPage();sp.setDefaultTimeout(15000);
     sp.on('pageerror',e=>errors.push(e.message));
     sp.on('request',request=>{if(!request.url().startsWith(base)) requests.push(request.url());});
-    await sp.route('**/*',route=>route.request().url().startsWith(base)?route.continue():route.abort());
+    // Answer YouTube oEmbed probes locally: one can still be in flight (more so with the 3.1.9 first-card cap)
+    // when the test navigates, and WebKit reports an aborted cross-origin fetch as a page error.
+    await sp.route('**/*',route=>{const url=route.request().url();if(url.startsWith(base))return route.continue();const u=new URL(url);if(u.hostname==='www.youtube.com'&&u.pathname==='/oembed')return route.fulfill({contentType:'application/json',body:JSON.stringify({type:'video'})});return route.abort();});
     await context.addInitScript(()=>{
       Object.defineProperty(Navigator.prototype,'share',{configurable:true,value:function(data){window.__shared=data;return Promise.resolve();}});
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:text=>{window.__copied=text;return Promise.resolve();}}});
