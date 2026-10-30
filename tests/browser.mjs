@@ -15,7 +15,10 @@ const context = await browser.newContext({viewport:{width:402,height:874},reduce
 const page = await context.newPage();
 page.setDefaultTimeout(15000);
 page.setDefaultNavigationTimeout(15000);
-page.on('pageerror',e=>errors.push(e.message));
+// WebKit reports an oEmbed probe cancelled by a navigation (or by the abort route below) as a page error. The app
+// already treats that as "unknown" (VideoAvailability.probe catches it), so it is noise here, not an app error.
+const pageError=e=>{if(!/\/oembed\?.* due to access control checks\.$/.test(e.message)) errors.push(e.message);};
+page.on('pageerror',pageError);
 page.on('request',request=>{if(!request.url().startsWith(base)) requests.push(request.url());});
 await page.route('**/*',route=>route.request().url().startsWith(base)?route.continue():route.abort());
 async function check(name,fn){await fn();results.push(name);console.log('PASS '+name);}
@@ -383,7 +386,7 @@ try {
   await check('production entry: connect, discover, like, reload, replay and remove with mocked endpoints',async()=>{
     const isolated=await browser.newContext({viewport:{width:402,height:874},reducedMotion:'reduce'}), live=await isolated.newPage();
     live.setDefaultTimeout(15000); const remote=new Map(),writes=[];let releaseRequests=0,retrying=false;
-    live.on('pageerror',error=>errors.push(error.message));
+    live.on('pageerror',pageError);
     await live.route('**/*',async route=>{
       const request=route.request(),url=new URL(request.url());
       if(request.url().startsWith(base)) return route.continue();
@@ -420,11 +423,9 @@ try {
   });
   await check('share: link pins that exact track as card 0, first swipe down opens Filters, apply digs from card 1, swipe up returns',async()=>{
     const context=await browser.newContext({viewport:{width:402,height:874},reducedMotion:'reduce'}), sp=await context.newPage();sp.setDefaultTimeout(15000);
-    sp.on('pageerror',e=>errors.push(e.message));
+    sp.on('pageerror',pageError);
     sp.on('request',request=>{if(!request.url().startsWith(base)) requests.push(request.url());});
-    // Answer YouTube oEmbed probes locally: one can still be in flight (more so with the 3.1.9 first-card cap)
-    // when the test navigates, and WebKit reports an aborted cross-origin fetch as a page error.
-    await sp.route('**/*',route=>{const url=route.request().url();if(url.startsWith(base))return route.continue();const u=new URL(url);if(u.hostname==='www.youtube.com'&&u.pathname==='/oembed')return route.fulfill({contentType:'application/json',body:JSON.stringify({type:'video'})});return route.abort();});
+    await sp.route('**/*',route=>route.request().url().startsWith(base)?route.continue():route.abort());
     await context.addInitScript(()=>{
       Object.defineProperty(Navigator.prototype,'share',{configurable:true,value:function(data){window.__shared=data;return Promise.resolve();}});
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:text=>{window.__copied=text;return Promise.resolve();}}});
