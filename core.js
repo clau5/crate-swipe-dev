@@ -270,7 +270,11 @@ class Explorer{
       let playable=rel;
       if(this.o.checkVideo){
         const videos=rel.videos||[];
-        const checks=await Promise.all(videos.map(v=>{const id=ytId(v.uri);return id&&v.embed!==false&&!this.state.skipVid?.has(id)?this.o.checkVideo(id):true;}));
+        // 3.1.10: until the first song, don't hold the first card behind every oEmbed probe of a release
+        // (a release can link 40+ videos, probed 3 at a time). Probes still running at the deadline count
+        // as unknown, like a transport failure: kept, and a dead one is skipped by the player as usual.
+        const cap=this.withSongs===0?(this.o.firstCheckMs??700):0,deadline=cap>0?new Promise(r=>setTimeout(()=>r(null),cap)):null;
+        const checks=await Promise.all(videos.map(v=>{const id=ytId(v.uri);if(!(id&&v.embed!==false&&!this.state.skipVid?.has(id)))return true;const c=this.o.checkVideo(id);return deadline?Promise.race([c,deadline]):c;}));
         if(this.stopped)return;
         playable={...rel,videos:videos.filter((v,i)=>checks[i]!==false)};
       }
