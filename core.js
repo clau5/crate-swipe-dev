@@ -270,7 +270,7 @@ class Explorer{
       let playable=rel;
       if(this.o.checkVideo){
         const videos=rel.videos||[];
-        // 3.1.10: until the first song, don't hold the first card behind every oEmbed probe of a release
+        // 3.1.9: until the first song, don't hold the first card behind every oEmbed probe of a release
         // (a release can link 40+ videos, probed 3 at a time). Probes still running at the deadline count
         // as unknown, like a transport failure: kept, and a dead one is skipped by the player as usual.
         const cap=this.withSongs===0?(this.o.firstCheckMs??700):0,deadline=cap>0?new Promise(r=>setTimeout(()=>r(null),cap)):null;
